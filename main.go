@@ -7,13 +7,53 @@
 
 package main
 
+/*
+#include <string.h>
+
+char *vertex_shader = "#version 130\n\nin vec3 vertexPosition;\nin vec4 vertexColor;\nout vec4 fragementColor;\n\nuniform mat4 projection = mat4(1.0);\n\nvoid main() {\n\tgl_Position = projection * vec4(vertexPosition, 1.0f);\n\tfragementColor = vertexColor;\n}";
+char *fragment_shader = "#version 130\n\nin vec4 fragementColor;\nout vec4 color;\n\nvoid main() {\n\tcolor = fragementColor;\n}";
+char *projection_name = "projection";
+*/
+import "C"
 import (
 	"errors"
 	"fmt"
 	"github.com/go-gl/gl/v3.3-core/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
-	"github.com/vbsw/plainshader"
 	"runtime"
+	"unsafe"
+)
+
+var (
+	// vertexShaderSrc contains the following program:
+	//
+	//   #version 130
+	//
+	//   in vec3 vertexPosition;
+	//   in vec4 vertexColor;
+	//   out vec4 fragementColor;
+	//
+	//   uniform mat4 projection = mat4(1.0);
+	//
+	//   void main() {
+	//     gl_Position = projection * vec4(vertexPosition, 1.0f);
+	//     fragementColor = vertexColor;
+	//   }
+	vertexShaderSrc = (**uint8)(unsafe.Pointer(&C.vertex_shader))
+
+	// fragmentShaderSrc contains the following program:
+	//
+	//   #version 130
+	//
+	//   in vec4 fragementColor;
+	//   out vec4 color;
+	//
+	//   void main () {
+	//     color = texture(ourTexture, TexCoord);
+	//   }
+	fragmentShaderSrc = (**uint8)(unsafe.Pointer(&C.fragment_shader))
+
+	projectionName = (*uint8)(unsafe.Pointer(C.projection_name))
 )
 
 func init() {
@@ -36,16 +76,16 @@ func main() {
 			err = gl.Init()
 
 			if err == nil {
-				var vertexShader uint32
-				vertexShader, err = loadShader(gl.VERTEX_SHADER, plainshader.VertexShader)
+				var vShader uint32
+				vShader, err = loadShader(gl.VERTEX_SHADER, vertexShaderSrc)
 
 				if err == nil {
-					var fragmentShader uint32
-					fragmentShader, err = loadShader(gl.FRAGMENT_SHADER, plainshader.FragmentShader)
+					var fShader uint32
+					fShader, err = loadShader(gl.FRAGMENT_SHADER, fragmentShaderSrc)
 
 					if err == nil {
 						var program uint32
-						program, err = loadProgram(vertexShader, fragmentShader)
+						program, err = newProgram(vShader, fShader)
 
 						if err == nil {
 							defer gl.DeleteProgram(program)
@@ -53,8 +93,10 @@ func main() {
 							defer gl.DeleteBuffers(int32(len(levelVBOs)), &levelVBOs[0])
 							levelVAOs := newVAOs(2)
 							defer gl.DeleteVertexArrays(int32(len(levelVAOs)), &levelVAOs[0])
+
 							bindLevelObjects(levelVAOs, levelVBOs)
 							gl.UseProgram(program)
+							setProjection(program, 840, 360)
 
 							// transparancy
 							// gl.Enable(gl.BLEND);
@@ -69,9 +111,8 @@ func main() {
 
 								for _, vao := range levelVAOs {
 									gl.BindVertexArray(vao)
-									gl.DrawArrays(gl.TRIANGLES, 0, 3)
+									gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4)
 								}
-
 								window.SwapBuffers()
 								glfw.PollEvents()
 							}
@@ -108,7 +149,7 @@ func loadShader(shaderType uint32, shaderSource **uint8) (uint32, error) {
 	return shader, err
 }
 
-func loadProgram(vShader, fShader uint32) (uint32, error) {
+func newProgram(vShader, fShader uint32) (uint32, error) {
 	program := gl.CreateProgram()
 	gl.AttachShader(program, vShader)
 	gl.AttachShader(program, fShader)
@@ -182,8 +223,8 @@ func newVAOs(n int) []uint32 {
 }
 
 func bindLevelObjects(vaos, vbos []uint32) {
-	pointsA := newPoints(-0.5, 0.75, -0.25, 0.5, -0.75, 0.5)
-	pointsB := newPoints(0.5, -0.25, 0.75, -0.5, 0.25, -0.5)
+	pointsA := newPoints(200, 250, 30, 30)
+	pointsB := newPoints(600, 70, 30, 30)
 	bindObjects(vaos[0], vbos[0], pointsA)
 	bindObjects(vaos[1], vbos[1], pointsB)
 }
@@ -201,29 +242,36 @@ func bindObjects(vao, vbo uint32, points []float32) {
 	gl.VertexAttribPointer(1, 4, gl.FLOAT, false, 7*4, gl.PtrOffset(3*4))
 }
 
-func newPoints(aX, aY, bX, bY, cX, cY float32) []float32 {
-	points := make([]float32, 21)
-	points[0] = aX
-	points[1] = aY
+func newPoints(aX, aY, width, height float32) []float32 {
+	points := make([]float32, 28)
+	points[0] = aX + width
+	points[1] = aY + height
 	points[2] = 0.0
 	points[3] = 1.0
 	points[4] = 1.0
 	points[5] = 1.0
 	points[6] = 1.0
-	points[7] = bX
-	points[8] = bY
+	points[7] = aX + width
+	points[8] = aY
 	points[9] = 0.0
 	points[10] = 1.0
 	points[11] = 1.0
 	points[12] = 1.0
 	points[13] = 1.0
-	points[14] = cX
-	points[15] = cY
+	points[14] = aX
+	points[15] = aY + height
 	points[16] = 0.0
 	points[17] = 1.0
 	points[18] = 1.0
 	points[19] = 1.0
 	points[20] = 1.0
+	points[21] = aX
+	points[22] = aY
+	points[23] = 0.0
+	points[24] = 1.0
+	points[25] = 1.0
+	points[26] = 1.0
+	points[27] = 1.0
 	return points
 }
 
@@ -239,3 +287,15 @@ func bindBuffer(index int, buffers []uint32, points []float32) {
 	gl.VertexAttribPointer(1, 4, gl.FLOAT, false, 7*4, gl.PtrOffset(3*4))
 	gl.EnableVertexAttribArray(1)
 }
+
+func setProjection(shader uint32, width, height int) {
+	location := gl.GetUniformLocation(shader, projectionName)
+	projection := make([]float32, 4*4)
+	projection[0] = 2.0 / float32(width)
+	projection[5] = 2.0 / float32(height)
+	projection[12] = -1.0
+	projection[13] = -1.0
+	projection[15] = 1.0
+	gl.UniformMatrix4fv(location, 1, false, &projection[0])
+}
+
