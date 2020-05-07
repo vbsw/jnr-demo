@@ -421,13 +421,21 @@ func updateMovement() {
 		playerY += -speedY
 	}
 	if moveLeft {
-		playerX += -speedX
+		if jump || playerX != canvasWidth-wallWidth-playerWidth || moveDown {
+			playerX += -speedX
+		} else {
+			playerY += breakY
+		}
 		if playerX < platformWidth && playerY < platformHeight {
 			playerX = platformWidth
 			playerY += breakY
 		}
 	} else if moveRight {
-		playerX += speedX
+		if jump || playerX != platformWidth || moveDown {
+			playerX += speedX
+		} else {
+			playerY += breakY
+		}
 		if playerX > canvasWidth-wallWidth-playerWidth {
 			playerX = canvasWidth - wallWidth - playerWidth
 			playerY += breakY
