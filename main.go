@@ -7,53 +7,46 @@
 
 package main
 
-/*
-#include <string.h>
-
-char *vertex_shader = "#version 130\n\nin vec3 vertexPosition;\nin vec4 vertexColor;\nout vec4 fragementColor;\n\nuniform mat4 projection = mat4(1.0);\n\nvoid main() {\n\tgl_Position = projection * vec4(vertexPosition, 1.0f);\n\tfragementColor = vertexColor;\n}";
-char *fragment_shader = "#version 130\n\nin vec4 fragementColor;\nout vec4 color;\n\nvoid main() {\n\tcolor = fragementColor;\n}";
-char *projection_name = "projection";
-*/
-import "C"
 import (
 	"errors"
 	"fmt"
 	"github.com/go-gl/gl/v3.3-core/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
+	"github.com/vbsw/plainshader"
 	"runtime"
-	"unsafe"
+)
+
+const (
+	canvasWidth      = 840
+	canvasHeight     = 360
+	playerWidth      = 16
+	playerHeight     = 16
+	gapWidth         = 150
+	platformWidth    = canvasWidth - gapWidth
+	platformHeight   = 150
+	wallWidth        = 50
+	jumpHeightA      = 100
+	jumpHeightB      = 70
+	speedX           = 4
+	speedY           = 3
+	breakY           = 2
+	jumpAcceleration = 8
 )
 
 var (
-	// vertexShaderSrc contains the following program:
-	//
-	//   #version 130
-	//
-	//   in vec3 vertexPosition;
-	//   in vec4 vertexColor;
-	//   out vec4 fragementColor;
-	//
-	//   uniform mat4 projection = mat4(1.0);
-	//
-	//   void main() {
-	//     gl_Position = projection * vec4(vertexPosition, 1.0f);
-	//     fragementColor = vertexColor;
-	//   }
-	vertexShaderSrc = (**uint8)(unsafe.Pointer(&C.vertex_shader))
-
-	// fragmentShaderSrc contains the following program:
-	//
-	//   #version 130
-	//
-	//   in vec4 fragementColor;
-	//   out vec4 color;
-	//
-	//   void main () {
-	//     color = texture(ourTexture, TexCoord);
-	//   }
-	fragmentShaderSrc = (**uint8)(unsafe.Pointer(&C.fragment_shader))
-
-	projectionName = (*uint8)(unsafe.Pointer(C.projection_name))
+	modelLocation int32
+	modelMatrix   []float32
+	moveLeft      bool
+	moveRight     bool
+	moveUp        bool
+	moveDown      bool
+	jump          bool
+	jumpingA      bool
+	jumpingB      bool
+	playerX       float32
+	playerY       float32
+	jumpY         float32
+	jumpSpeed     float32
 )
 
 func init() {
@@ -66,22 +59,23 @@ func main() {
 	if err == nil {
 		var window *glfw.Window
 		defer glfw.Terminate()
-		window, err = glfw.CreateWindow(840, 360, "OpenGL Example", nil, nil)
+		window, err = glfw.CreateWindow(canvasWidth, canvasHeight, "OpenGL Example", nil, nil)
 
 		if err == nil {
 			defer window.Destroy()
 			window.SetKeyCallback(onKey)
 			window.SetSizeCallback(onResize)
 			window.MakeContextCurrent()
+			glfw.SwapInterval(1)
 			err = gl.Init()
 
 			if err == nil {
 				var vShader uint32
-				vShader, err = loadShader(gl.VERTEX_SHADER, vertexShaderSrc)
+				vShader, err = newShader(gl.VERTEX_SHADER, plainshader.VertexShader)
 
 				if err == nil {
 					var fShader uint32
-					fShader, err = loadShader(gl.FRAGMENT_SHADER, fragmentShaderSrc)
+					fShader, err = newShader(gl.FRAGMENT_SHADER, plainshader.FragmentShader)
 
 					if err == nil {
 						var program uint32
@@ -89,14 +83,17 @@ func main() {
 
 						if err == nil {
 							defer gl.DeleteProgram(program)
-							levelVBOs := newVBOs(2)
-							defer gl.DeleteBuffers(int32(len(levelVBOs)), &levelVBOs[0])
-							levelVAOs := newVAOs(2)
-							defer gl.DeleteVertexArrays(int32(len(levelVAOs)), &levelVAOs[0])
+							vbos := newVBOs(3)
+							defer gl.DeleteBuffers(int32(len(vbos)), &vbos[0])
+							vaos := newVAOs(3)
+							defer gl.DeleteVertexArrays(int32(len(vaos)), &vaos[0])
 
-							bindLevelObjects(levelVAOs, levelVBOs)
+							bindLevelObjects(program, vaos[:2], vbos[:2])
+							bindPlayerObjects(program, vaos[2:], vbos[2:])
 							gl.UseProgram(program)
-							setProjection(program, 840, 360)
+							setProjection(program, canvasWidth, canvasHeight)
+							setModel(program)
+							resetPlayer()
 
 							// transparancy
 							// gl.Enable(gl.BLEND);
@@ -106,10 +103,20 @@ func main() {
 							// gl.PolygonMode(gl.FRONT_AND_BACK, gl.LINE)
 
 							for !window.ShouldClose() {
+								updateMovement()
 								gl.ClearColor(0, 0, 0, 0)
 								gl.Clear(gl.COLOR_BUFFER_BIT)
 
-								for _, vao := range levelVAOs {
+								// draw level
+								setLevelModel()
+								for _, vao := range vaos[:2] {
+									gl.BindVertexArray(vao)
+									gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4)
+								}
+
+								// draw player
+								setPlayerModel()
+								for _, vao := range vaos[2:] {
 									gl.BindVertexArray(vao)
 									gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4)
 								}
@@ -128,8 +135,66 @@ func main() {
 }
 
 func onKey(window *glfw.Window, key glfw.Key, scancode int, action glfw.Action, mods glfw.ModifierKey) {
-	if key == glfw.KeyEscape && action == glfw.Press {
-		window.SetShouldClose(true)
+	if action == glfw.Press {
+		switch key {
+		case glfw.KeyEscape:
+			window.SetShouldClose(true)
+		case glfw.KeyLeft:
+			moveLeft = true
+		case glfw.KeyJ:
+			moveLeft = true
+		case glfw.KeyRight:
+			moveRight = true
+		case glfw.KeyL:
+			moveRight = true
+		case glfw.KeyUp:
+			moveUp = true
+		case glfw.KeyI:
+			moveUp = true
+		case glfw.KeyDown:
+			moveDown = true
+		case glfw.KeyK:
+			moveDown = true
+		case glfw.KeySpace:
+			jump = true
+			if playerY <= jumpY && playerX < platformWidth || (playerX == platformWidth || playerX == canvasWidth-wallWidth-playerWidth) {
+				jumpingA = true
+				jumpY = playerY
+				jumpSpeed = jumpAcceleration
+			}
+		case glfw.KeyF:
+			jump = true
+			if playerY <= jumpY && playerX < platformWidth || (playerX == platformWidth || playerX == canvasWidth-wallWidth-playerWidth) {
+				jumpingA = true
+				jumpY = playerY
+				jumpSpeed = jumpAcceleration
+			}
+		case glfw.KeyR:
+			resetPlayer()
+		}
+	} else if action == glfw.Release {
+		switch key {
+		case glfw.KeyLeft:
+			moveLeft = false
+		case glfw.KeyJ:
+			moveLeft = false
+		case glfw.KeyRight:
+			moveRight = false
+		case glfw.KeyL:
+			moveRight = false
+		case glfw.KeyUp:
+			moveUp = false
+		case glfw.KeyI:
+			moveUp = false
+		case glfw.KeyDown:
+			moveDown = false
+		case glfw.KeyK:
+			moveDown = false
+		case glfw.KeySpace:
+			jump = false
+		case glfw.KeyF:
+			jump = false
+		}
 	}
 }
 
@@ -137,7 +202,7 @@ func onResize(w *glfw.Window, width, height int) {
 	gl.Viewport(0, 0, int32(width), int32(height))
 }
 
-func loadShader(shaderType uint32, shaderSource **uint8) (uint32, error) {
+func newShader(shaderType uint32, shaderSource **uint8) (uint32, error) {
 	shader := gl.CreateShader(shaderType)
 	gl.ShaderSource(shader, 1, shaderSource, nil)
 	gl.CompileShader(shader)
@@ -222,24 +287,42 @@ func newVAOs(n int) []uint32 {
 	return vaos
 }
 
-func bindLevelObjects(vaos, vbos []uint32) {
-	pointsA := newPoints(200, 250, 30, 30)
-	pointsB := newPoints(600, 70, 30, 30)
-	bindObjects(vaos[0], vbos[0], pointsA)
-	bindObjects(vaos[1], vbos[1], pointsB)
+func bindLevelObjects(program uint32, vaos, vbos []uint32) {
+	positionLocation := uint32(gl.GetAttribLocation(program, plainshader.PositionAttribute))
+	colorLocation := uint32(gl.GetAttribLocation(program, plainshader.ColorAttribute))
+	pointsA := newPoints(0, 0, platformWidth, platformHeight)
+	pointsB := newPoints(canvasWidth-wallWidth, 0, wallWidth, 340)
+	bindObjects(vaos[0], vbos[0], pointsA, positionLocation, colorLocation)
+	bindObjects(vaos[1], vbos[1], pointsB, positionLocation, colorLocation)
 }
 
-func bindObjects(vao, vbo uint32, points []float32) {
+func bindPlayerObjects(program uint32, vaos, vbos []uint32) {
+	positionLocation := uint32(gl.GetAttribLocation(program, plainshader.PositionAttribute))
+	colorLocation := uint32(gl.GetAttribLocation(program, plainshader.ColorAttribute))
+	pointsA := newPoints(0, 0, playerWidth, playerHeight)
+	// green color
+	pointsA[3] = 0.0
+	pointsA[5] = 0.0
+	pointsA[10] = 0.0
+	pointsA[12] = 0.0
+	pointsA[17] = 0.0
+	pointsA[19] = 0.0
+	pointsA[24] = 0.0
+	pointsA[26] = 0.0
+	bindObjects(vaos[0], vbos[0], pointsA, positionLocation, colorLocation)
+}
+
+func bindObjects(vao, vbo uint32, points []float32, positionLocation, colorLocation uint32) {
 	gl.BindVertexArray(vao)
-	gl.EnableVertexAttribArray(0)
-	gl.EnableVertexAttribArray(1)
+	gl.EnableVertexAttribArray(positionLocation)
+	gl.EnableVertexAttribArray(colorLocation)
 
 	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
 	gl.BufferData(gl.ARRAY_BUFFER, len(points)*4, gl.Ptr(points), gl.STATIC_DRAW)
 	// position
-	gl.VertexAttribPointer(0, 3, gl.FLOAT, false, 7*4, gl.PtrOffset(0))
+	gl.VertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 7*4, gl.PtrOffset(0))
 	// color
-	gl.VertexAttribPointer(1, 4, gl.FLOAT, false, 7*4, gl.PtrOffset(3*4))
+	gl.VertexAttribPointer(colorLocation, 4, gl.FLOAT, false, 7*4, gl.PtrOffset(3*4))
 }
 
 func newPoints(aX, aY, width, height float32) []float32 {
@@ -275,27 +358,85 @@ func newPoints(aX, aY, width, height float32) []float32 {
 	return points
 }
 
-func bindBuffer(index int, buffers []uint32, points []float32) {
-	gl.BindBuffer(gl.ARRAY_BUFFER, buffers[index])
-	gl.BufferData(gl.ARRAY_BUFFER, len(points)*4, gl.Ptr(points), gl.STATIC_DRAW)
-
-	// position
-	gl.VertexAttribPointer(0, 3, gl.FLOAT, false, 7*4, gl.PtrOffset(0))
-	gl.EnableVertexAttribArray(0)
-
-	// color
-	gl.VertexAttribPointer(1, 4, gl.FLOAT, false, 7*4, gl.PtrOffset(3*4))
-	gl.EnableVertexAttribArray(1)
+func setProjection(program uint32, width, height int) {
+	location := gl.GetUniformLocation(program, plainshader.ProjectionUniform)
+	matrix := make([]float32, 4*4)
+	matrix[0] = 2.0 / float32(width)
+	matrix[5] = 2.0 / float32(height)
+	matrix[12] = -1.0
+	matrix[13] = -1.0
+	matrix[15] = 1.0
+	gl.UniformMatrix4fv(location, 1, false, &matrix[0])
 }
 
-func setProjection(shader uint32, width, height int) {
-	location := gl.GetUniformLocation(shader, projectionName)
-	projection := make([]float32, 4*4)
-	projection[0] = 2.0 / float32(width)
-	projection[5] = 2.0 / float32(height)
-	projection[12] = -1.0
-	projection[13] = -1.0
-	projection[15] = 1.0
-	gl.UniformMatrix4fv(location, 1, false, &projection[0])
+func setModel(program uint32) {
+	modelLocation = gl.GetUniformLocation(program, plainshader.ModelUniform)
+	modelMatrix = make([]float32, 4*4)
+	modelMatrix[0] = 1.0
+	modelMatrix[5] = 1.0
+	modelMatrix[10] = 1.0
+	modelMatrix[15] = 1.0
 }
 
+func setLevelModel() {
+	modelMatrix[12] = 0.0
+	modelMatrix[13] = 0.0
+	gl.UniformMatrix4fv(modelLocation, 1, false, &modelMatrix[0])
+}
+
+func setPlayerModel() {
+	modelMatrix[12] = playerX
+	modelMatrix[13] = playerY
+	gl.UniformMatrix4fv(modelLocation, 1, false, &modelMatrix[0])
+}
+
+func updateMovement() {
+	if jumpingA {
+		if playerY-jumpY < jumpHeightA {
+			playerY += jumpSpeed
+			jumpSpeed -= 0.2
+			if playerY-jumpY < jumpHeightB && !jump {
+				jumpingA = false
+				jumpingB = true
+			}
+		} else {
+			jumpingA = false
+			playerY += -speedY
+		}
+	} else if jumpingB {
+		if playerY-jumpY < jumpHeightB {
+			playerY += jumpSpeed
+			jumpSpeed -= 0.2
+		} else {
+			jumpingB = false
+			playerY += -speedY
+		}
+	} else if playerY > platformHeight || playerX >= platformWidth {
+		playerY += -speedY
+		if playerX < platformWidth && playerY < platformHeight {
+			playerY = platformHeight
+			jumpY = platformHeight
+		}
+	} else if playerX > platformWidth {
+		playerY += -speedY
+	}
+	if moveLeft {
+		playerX += -speedX
+		if playerX < platformWidth && playerY < platformHeight {
+			playerX = platformWidth
+			playerY += breakY
+		}
+	} else if moveRight {
+		playerX += speedX
+		if playerX > canvasWidth-wallWidth-playerWidth {
+			playerX = canvasWidth - wallWidth - playerWidth
+			playerY += breakY
+		}
+	}
+}
+
+func resetPlayer() {
+	playerX = (canvasWidth-150)/2 + playerWidth/2
+	playerY = canvasHeight - canvasHeight/3
+	jumpY = platformHeight
+}
