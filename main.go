@@ -43,6 +43,7 @@ var (
 	jump          bool
 	jumpingA      bool
 	jumpingB      bool
+	wallLock      bool
 	playerX       float32
 	playerY       float32
 	jumpY         float32
@@ -155,6 +156,13 @@ func onKey(window *glfw.Window, key glfw.Key, scancode int, action glfw.Action, 
 			moveDown = true
 		case glfw.KeyK:
 			moveDown = true
+		case glfw.KeyS:
+			wallLock = !wallLock
+			if wallLock {
+				fmt.Println("wall lock ON")
+			} else {
+				fmt.Println("wall lock OFF")
+			}
 		case glfw.KeySpace:
 			jump = true
 			if playerY <= jumpY && playerX < platformWidth || (playerX == platformWidth || playerX == canvasWidth-wallWidth-playerWidth) {
@@ -421,20 +429,28 @@ func updateMovement() {
 		playerY += -speedY
 	}
 	if moveLeft {
-		if jump || playerX != canvasWidth-wallWidth-playerWidth || moveDown {
-			playerX += -speedX
+		if wallLock {
+			if jump || playerX != canvasWidth-wallWidth-playerWidth || moveDown {
+				playerX += -speedX
+			} else {
+				playerY += breakY
+			}
 		} else {
-			playerY += breakY
+			playerX += -speedX
 		}
 		if playerX < platformWidth && playerY < platformHeight {
 			playerX = platformWidth
 			playerY += breakY
 		}
 	} else if moveRight {
-		if jump || playerX != platformWidth || moveDown {
-			playerX += speedX
+		if wallLock {
+			if jump || playerX != platformWidth || moveDown {
+				playerX += speedX
+			} else {
+				playerY += breakY
+			}
 		} else {
-			playerY += breakY
+			playerX += speedX
 		}
 		if playerX > canvasWidth-wallWidth-playerWidth {
 			playerX = canvasWidth - wallWidth - playerWidth
