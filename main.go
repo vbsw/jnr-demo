@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"github.com/go-gl/gl/v3.3-core/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
-	"github.com/vbsw/plainshader"
+	"github.com/vbsw/shaders"
 	"runtime"
 )
 
@@ -34,20 +34,19 @@ const (
 )
 
 var (
-	modelLocation int32
-	modelMatrix   []float32
-	moveLeft      bool
-	moveRight     bool
-	moveUp        bool
-	moveDown      bool
-	jump          bool
-	jumpingA      bool
-	jumpingB      bool
-	wallLock      bool
-	playerX       float32
-	playerY       float32
-	jumpY         float32
-	jumpSpeed     float32
+	modelMatrix []float32
+	moveLeft    bool
+	moveRight   bool
+	moveUp      bool
+	moveDown    bool
+	jump        bool
+	jumpingA    bool
+	jumpingB    bool
+	wallLock    bool
+	playerX     float32
+	playerY     float32
+	jumpY       float32
+	jumpSpeed   float32
 )
 
 func init() {
@@ -71,60 +70,52 @@ func main() {
 			err = gl.Init()
 
 			if err == nil {
-				var vShader uint32
-				vShader, err = newShader(gl.VERTEX_SHADER, plainshader.VertexShader)
+				shader := shaders.NewPrimitiveShader()
+				err = initShaderProgram(shader)
 
 				if err == nil {
-					var fShader uint32
-					fShader, err = newShader(gl.FRAGMENT_SHADER, plainshader.FragmentShader)
+					defer gl.DeleteShader(shader.VertexShaderID)
+					defer gl.DeleteShader(shader.FragmentShaderID)
+					defer gl.DeleteProgram(shader.ProgramID)
+					vbos := newVBOs(3)
+					defer gl.DeleteBuffers(int32(len(vbos)), &vbos[0])
+					vaos := newVAOs(3)
+					defer gl.DeleteVertexArrays(int32(len(vaos)), &vaos[0])
+					modelMatrix = newModelMatrix()
 
-					if err == nil {
-						var program uint32
-						program, err = newProgram(vShader, fShader)
+					bindLevelObjects(shader, vaos[:2], vbos[:2])
+					bindPlayerObjects(shader, vaos[2:], vbos[2:])
+					gl.UseProgram(shader.ProgramID)
+					setProjection(shader)
+					resetPlayer()
 
-						if err == nil {
-							defer gl.DeleteProgram(program)
-							vbos := newVBOs(3)
-							defer gl.DeleteBuffers(int32(len(vbos)), &vbos[0])
-							vaos := newVAOs(3)
-							defer gl.DeleteVertexArrays(int32(len(vaos)), &vaos[0])
+					// transparancy
+					// gl.Enable(gl.BLEND);
+					// gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-							bindLevelObjects(program, vaos[:2], vbos[:2])
-							bindPlayerObjects(program, vaos[2:], vbos[2:])
-							gl.UseProgram(program)
-							setProjection(program, canvasWidth, canvasHeight)
-							setModel(program)
-							resetPlayer()
+					// wireframe mode
+					// gl.PolygonMode(gl.FRONT_AND_BACK, gl.LINE)
 
-							// transparancy
-							// gl.Enable(gl.BLEND);
-							// gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+					for !window.ShouldClose() {
+						updateMovement()
+						gl.ClearColor(0, 0, 0, 0)
+						gl.Clear(gl.COLOR_BUFFER_BIT)
 
-							// wireframe mode
-							// gl.PolygonMode(gl.FRONT_AND_BACK, gl.LINE)
-
-							for !window.ShouldClose() {
-								updateMovement()
-								gl.ClearColor(0, 0, 0, 0)
-								gl.Clear(gl.COLOR_BUFFER_BIT)
-
-								// draw level
-								setLevelModel()
-								for _, vao := range vaos[:2] {
-									gl.BindVertexArray(vao)
-									gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4)
-								}
-
-								// draw player
-								setPlayerModel()
-								for _, vao := range vaos[2:] {
-									gl.BindVertexArray(vao)
-									gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4)
-								}
-								window.SwapBuffers()
-								glfw.PollEvents()
-							}
+						// draw level
+						setLevelModel(shader)
+						for _, vao := range vaos[:2] {
+							gl.BindVertexArray(vao)
+							gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4)
 						}
+
+						// draw player
+						setPlayerModel(shader)
+						for _, vao := range vaos[2:] {
+							gl.BindVertexArray(vao)
+							gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4)
+						}
+						window.SwapBuffers()
+						glfw.PollEvents()
 					}
 				}
 			}
@@ -210,6 +201,33 @@ func onResize(w *glfw.Window, width, height int) {
 	gl.Viewport(0, 0, int32(width), int32(height))
 }
 
+func initShaderProgram(shader *shaders.Shader) error {
+	var err error
+	shader.VertexShaderID, err = newShader(gl.VERTEX_SHADER, shader.VertexShader)
+
+	if err == nil {
+		shader.FragmentShaderID, err = newShader(gl.FRAGMENT_SHADER, shader.FragmentShader)
+
+		if err == nil {
+			shader.ProgramID, err = newProgram(shader)
+
+			if err == nil {
+				shader.PositionLocation = gl.GetAttribLocation(shader.ProgramID, shader.PositionAttribute)
+				shader.ColorLocation = gl.GetAttribLocation(shader.ProgramID, shader.ColorAttribute)
+				shader.ProjectionLocation = gl.GetUniformLocation(shader.ProgramID, shader.ProjectionUniform)
+				shader.ModelLocation = gl.GetUniformLocation(shader.ProgramID, shader.ModelUniform)
+
+			} else {
+				gl.DeleteShader(shader.VertexShaderID)
+				gl.DeleteShader(shader.FragmentShaderID)
+			}
+		} else {
+			gl.DeleteShader(shader.VertexShaderID)
+		}
+	}
+	return err
+}
+
 func newShader(shaderType uint32, shaderSource **uint8) (uint32, error) {
 	shader := gl.CreateShader(shaderType)
 	gl.ShaderSource(shader, 1, shaderSource, nil)
@@ -222,10 +240,10 @@ func newShader(shaderType uint32, shaderSource **uint8) (uint32, error) {
 	return shader, err
 }
 
-func newProgram(vShader, fShader uint32) (uint32, error) {
+func newProgram(shader *shaders.Shader) (uint32, error) {
 	program := gl.CreateProgram()
-	gl.AttachShader(program, vShader)
-	gl.AttachShader(program, fShader)
+	gl.AttachShader(program, shader.VertexShaderID)
+	gl.AttachShader(program, shader.FragmentShaderID)
 	gl.LinkProgram(program)
 	err := checkProgram(program, gl.LINK_STATUS)
 
@@ -295,18 +313,14 @@ func newVAOs(n int) []uint32 {
 	return vaos
 }
 
-func bindLevelObjects(program uint32, vaos, vbos []uint32) {
-	positionLocation := uint32(gl.GetAttribLocation(program, plainshader.PositionAttribute))
-	colorLocation := uint32(gl.GetAttribLocation(program, plainshader.ColorAttribute))
+func bindLevelObjects(shader *shaders.Shader, vaos, vbos []uint32) {
 	pointsA := newPoints(0, 0, platformWidth, platformHeight)
 	pointsB := newPoints(canvasWidth-wallWidth, 0, wallWidth, 340)
-	bindObjects(vaos[0], vbos[0], pointsA, positionLocation, colorLocation)
-	bindObjects(vaos[1], vbos[1], pointsB, positionLocation, colorLocation)
+	bindObjects(vaos[0], vbos[0], pointsA, shader)
+	bindObjects(vaos[1], vbos[1], pointsB, shader)
 }
 
-func bindPlayerObjects(program uint32, vaos, vbos []uint32) {
-	positionLocation := uint32(gl.GetAttribLocation(program, plainshader.PositionAttribute))
-	colorLocation := uint32(gl.GetAttribLocation(program, plainshader.ColorAttribute))
+func bindPlayerObjects(shader *shaders.Shader, vaos, vbos []uint32) {
 	pointsA := newPoints(0, 0, playerWidth, playerHeight)
 	// green color
 	pointsA[3] = 0.0
@@ -317,20 +331,20 @@ func bindPlayerObjects(program uint32, vaos, vbos []uint32) {
 	pointsA[19] = 0.0
 	pointsA[24] = 0.0
 	pointsA[26] = 0.0
-	bindObjects(vaos[0], vbos[0], pointsA, positionLocation, colorLocation)
+	bindObjects(vaos[0], vbos[0], pointsA, shader)
 }
 
-func bindObjects(vao, vbo uint32, points []float32, positionLocation, colorLocation uint32) {
+func bindObjects(vao, vbo uint32, points []float32, shader *shaders.Shader) {
 	gl.BindVertexArray(vao)
-	gl.EnableVertexAttribArray(positionLocation)
-	gl.EnableVertexAttribArray(colorLocation)
+	gl.EnableVertexAttribArray(uint32(shader.PositionLocation))
+	gl.EnableVertexAttribArray(uint32(shader.ColorLocation))
 
 	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
 	gl.BufferData(gl.ARRAY_BUFFER, len(points)*4, gl.Ptr(points), gl.STATIC_DRAW)
 	// position
-	gl.VertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 7*4, gl.PtrOffset(0))
+	gl.VertexAttribPointer(uint32(shader.PositionLocation), 3, gl.FLOAT, false, 7*4, gl.PtrOffset(0))
 	// color
-	gl.VertexAttribPointer(colorLocation, 4, gl.FLOAT, false, 7*4, gl.PtrOffset(3*4))
+	gl.VertexAttribPointer(uint32(shader.ColorLocation), 4, gl.FLOAT, false, 7*4, gl.PtrOffset(3*4))
 }
 
 func newPoints(aX, aY, width, height float32) []float32 {
@@ -366,36 +380,35 @@ func newPoints(aX, aY, width, height float32) []float32 {
 	return points
 }
 
-func setProjection(program uint32, width, height int) {
-	location := gl.GetUniformLocation(program, plainshader.ProjectionUniform)
-	matrix := make([]float32, 4*4)
-	matrix[0] = 2.0 / float32(width)
-	matrix[5] = 2.0 / float32(height)
-	matrix[12] = -1.0
-	matrix[13] = -1.0
-	matrix[15] = 1.0
-	gl.UniformMatrix4fv(location, 1, false, &matrix[0])
-}
-
-func setModel(program uint32) {
-	modelLocation = gl.GetUniformLocation(program, plainshader.ModelUniform)
+func newModelMatrix() []float32 {
 	modelMatrix = make([]float32, 4*4)
 	modelMatrix[0] = 1.0
 	modelMatrix[5] = 1.0
 	modelMatrix[10] = 1.0
 	modelMatrix[15] = 1.0
+	return modelMatrix
 }
 
-func setLevelModel() {
+func setProjection(shader *shaders.Shader) {
+	matrix := make([]float32, 4*4)
+	matrix[0] = 2.0 / float32(canvasWidth)
+	matrix[5] = 2.0 / float32(canvasHeight)
+	matrix[12] = -1.0
+	matrix[13] = -1.0
+	matrix[15] = 1.0
+	gl.UniformMatrix4fv(shader.ProjectionLocation, 1, false, &matrix[0])
+}
+
+func setLevelModel(shader *shaders.Shader) {
 	modelMatrix[12] = 0.0
 	modelMatrix[13] = 0.0
-	gl.UniformMatrix4fv(modelLocation, 1, false, &modelMatrix[0])
+	gl.UniformMatrix4fv(shader.ModelLocation, 1, false, &modelMatrix[0])
 }
 
-func setPlayerModel() {
+func setPlayerModel(shader *shaders.Shader) {
 	modelMatrix[12] = playerX
 	modelMatrix[13] = playerY
-	gl.UniformMatrix4fv(modelLocation, 1, false, &modelMatrix[0])
+	gl.UniformMatrix4fv(shader.ModelLocation, 1, false, &modelMatrix[0])
 }
 
 func updateMovement() {
